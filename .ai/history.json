@@ -1,0 +1,24 @@
+[
+  {
+    "id": "20260421002",
+    "question": "写脚本推送到 Nexus 私服，推送脚本禁止提交到 GitHub",
+    "plan": "创建 publish_to_nexus.sh 和 publish_to_nexus.py 两个推送脚本，并在 .gitignore 中排除这两个文件",
+    "created_at": "2026-04-21 00:10:00",
+    "completed_at": "2026-04-21 00:15:00",
+    "change_list": [
+      { "file": "publish_to_nexus.sh", "change": "新建 Bash 推送脚本，包含构建和上传到 Nexus 私服的逻辑", "status": "add" },
+      { "file": "publish_to_nexus.py", "change": "新建 Python 推送脚本，功能同 sh 脚本，跨平台兼容", "status": "add" },
+      { "file": ".gitignore", "change": "新增排除规则，确保两个推送脚本不会被提交到 GitHub", "status": "modify" }
+    ]
+  },
+  {
+    "id": "20260421001",
+    "question": "在当前README.md的基础上写一份中文版本的README.md",
+    "plan": "读取原始 README.md，将全部内容翻译为简体中文，保留代码块、徽章、表格结构不变，生成 README_CN.md",
+    "created_at": "2026-04-21 00:00:00",
+    "completed_at": "2026-04-21 00:05:00",
+    "change_list": [
+      { "file": "README_CN.md", "change": "新建中文版 README，完整翻译原 README.md 所有内容", "status": "add" }
+    ]
+  }
+]

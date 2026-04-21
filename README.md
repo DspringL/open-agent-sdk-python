@@ -1,92 +1,583 @@
-# agent-sdk-python
+# Open Agent SDK (Python)
 
+[![PyPI version](https://img.shields.io/pypi/v/open-agent-sdk)](https://pypi.org/project/open-agent-sdk/)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-brightgreen)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
+Open-source Agent SDK that runs the full agent loop **in-process** — no subprocess or CLI required. Deploy anywhere: cloud, serverless, Docker, CI/CD.
 
-## Getting started
+Also available in **TypeScript**: [open-agent-sdk-typescript](https://github.com/codeany-ai/open-agent-sdk-typescript) · **Go**: [open-agent-sdk-go](https://github.com/codeany-ai/open-agent-sdk-go)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Features
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- **Multi-Provider** — Anthropic + OpenAI-compatible APIs (DeepSeek, Qwen, vLLM, Ollama) via unified provider abstraction
+- **Agent Loop** — Streaming agentic loop with tool execution, multi-turn conversations, and cost tracking
+- **35 Built-in Tools** — Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch, Agent (subagents), Skill, and more
+- **Skill System** — Reusable prompt templates with 5 bundled skills (commit, review, debug, simplify, test)
+- **MCP Support** — Connect to MCP servers via stdio, HTTP, and SSE transports
+- **Permission System** — Configurable tool approval with allow/deny rules and custom callbacks
+- **Hook System** — 20 lifecycle events for agent behavior interception
+- **Session Persistence** — Save/load/fork conversation sessions
+- **Custom Tools** — Define tools with Pydantic models or raw JSON schemas
+- **Extended Thinking** — Claude thinking budget configuration
+- **Cost Tracking** — Per-model token usage with accurate pricing (Anthropic + OpenAI + DeepSeek + Qwen)
 
-## Add your files
+## Get started
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+```bash
+pip install open-agent-sdk
+```
+
+Set your API key:
+
+```bash
+export CODEANY_API_KEY=your-api-key
+```
+
+Third-party providers (e.g. OpenRouter) are supported via `CODEANY_BASE_URL`:
+
+```bash
+export CODEANY_BASE_URL=https://openrouter.ai/api
+export CODEANY_API_KEY=sk-or-...
+export CODEANY_MODEL=anthropic/claude-sonnet-4
+```
+
+## Quick start
+
+### One-shot query (streaming)
+
+```python
+import asyncio
+from open_agent_sdk import query, AgentOptions, SDKMessageType
+
+async def main():
+    async for message in query(
+        prompt="Read pyproject.toml and tell me the project name.",
+        options=AgentOptions(
+            allowed_tools=["Read", "Glob"],
+            permission_mode="bypassPermissions",
+        ),
+    ):
+        if message.type == SDKMessageType.ASSISTANT:
+            print(message.text)
+
+asyncio.run(main())
+```
+
+### Simple blocking prompt
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions
+
+async def main():
+    agent = create_agent(AgentOptions(model="claude-sonnet-4-5"))
+    result = await agent.prompt("What files are in this project?")
+
+    print(result.text)
+    print(f"Turns: {result.num_turns}, Tokens: {result.usage.input_tokens + result.usage.output_tokens}")
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Multi-turn conversation
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions
+
+async def main():
+    agent = create_agent(AgentOptions(max_turns=5))
+
+    r1 = await agent.prompt('Create a file /tmp/hello.txt with "Hello World"')
+    print(r1.text)
+
+    r2 = await agent.prompt("Read back the file you just created")
+    print(r2.text)
+
+    print(f"Session messages: {len(agent.get_messages())}")
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### OpenAI-compatible models
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions
+
+async def main():
+    # Auto-detects openai-completions from model prefix
+    agent = create_agent(AgentOptions(
+        model="gpt-4o",
+        api_key="sk-...",
+    ))
+    print(f"API type: {agent.get_api_type()}")  # openai-completions
+
+    result = await agent.prompt("What is 2+2?")
+    print(result.text)
+    await agent.close()
+
+    # DeepSeek, Qwen, etc.
+    agent2 = create_agent(AgentOptions(
+        model="deepseek-chat",
+        api_key="sk-...",
+        base_url="https://api.deepseek.com/v1",
+    ))
+
+    # Or explicit api_type
+    agent3 = create_agent(AgentOptions(
+        api_type="openai-completions",
+        model="my-custom-model",
+        base_url="http://localhost:8000/v1",
+    ))
+
+asyncio.run(main())
+```
+
+### Custom tools (Pydantic schema)
+
+```python
+import asyncio
+from pydantic import BaseModel
+from open_agent_sdk import query, create_sdk_mcp_server, AgentOptions, SDKMessageType
+from open_agent_sdk.tool_helper import tool, CallToolResult
+
+class CityInput(BaseModel):
+    city: str
+
+async def get_weather_handler(input: CityInput, ctx):
+    return CallToolResult(
+        content=[{"type": "text", "text": f"{input.city}: 22°C, sunny"}]
+    )
+
+get_weather = tool("get_weather", "Get the temperature for a city", CityInput, get_weather_handler)
+server = create_sdk_mcp_server("weather", tools=[get_weather])
+
+async def main():
+    async for msg in query(
+        prompt="What is the weather in Tokyo?",
+        options=AgentOptions(mcp_servers={"weather": server}),
+    ):
+        if msg.type == SDKMessageType.RESULT:
+            print(f"Done: ${msg.total_cost:.4f}")
+
+asyncio.run(main())
+```
+
+### Custom tools (low-level)
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions
+from open_agent_sdk.tool_helper import define_tool
+from open_agent_sdk.types import ToolResult, ToolContext
+
+async def calc_handler(input: dict, ctx: ToolContext) -> ToolResult:
+    result = eval(input["expression"], {"__builtins__": {}})
+    return ToolResult(tool_use_id="", content=f"{input['expression']} = {result}")
+
+calculator = define_tool(
+    name="Calculator",
+    description="Evaluate a math expression",
+    input_schema={
+        "properties": {"expression": {"type": "string"}},
+        "required": ["expression"],
+    },
+    handler=calc_handler,
+    read_only=True,
+)
+
+async def main():
+    agent = create_agent(AgentOptions(tools=[calculator]))
+    r = await agent.prompt("Calculate 2**10 * 3")
+    print(r.text)
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Skills
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions, SDKMessageType
+from open_agent_sdk.skills import register_skill, get_all_skills, init_bundled_skills, SkillDefinition
+from open_agent_sdk.types import ToolContext
+
+async def main():
+    # 5 bundled skills are auto-initialized: commit, review, debug, simplify, test
+    init_bundled_skills()
+    print(f"Skills: {[s.name for s in get_all_skills()]}")
+
+    # Register a custom skill
+    async def explain_prompt(args, ctx):
+        return [{"type": "text", "text": f"Explain simply: {args}"}]
+
+    register_skill(SkillDefinition(
+        name="explain", description="Explain a concept simply",
+        aliases=["eli5"], user_invocable=True, get_prompt=explain_prompt,
+    ))
+
+    # Agent can invoke skills via the Skill tool
+    agent = create_agent(AgentOptions(max_turns=5))
+    result = await agent.prompt('Use the "explain" skill to explain git rebase')
+    print(result.text)
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### MCP server integration
+
+```python
+import asyncio
+from open_agent_sdk import create_agent, AgentOptions, McpStdioConfig
+
+async def main():
+    agent = create_agent(AgentOptions(
+        mcp_servers={
+            "filesystem": McpStdioConfig(
+                command="npx",
+                args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            ),
+        },
+    ))
+
+    result = await agent.prompt("List files in /tmp")
+    print(result.text)
+    await agent.close()
+
+asyncio.run(main())
+```
+
+### Subagents
+
+```python
+import asyncio
+from open_agent_sdk import query, AgentOptions, AgentDefinition, SDKMessageType
+
+async def main():
+    async for msg in query(
+        prompt="Use the code-reviewer agent to review src/",
+        options=AgentOptions(
+            agents={
+                "code-reviewer": AgentDefinition(
+                    description="Expert code reviewer",
+                    prompt="Analyze code quality. Focus on security and performance.",
+                    tools=["Read", "Glob", "Grep"],
+                ),
+            },
+        ),
+    ):
+        if msg.type == SDKMessageType.RESULT:
+            print("Done")
+
+asyncio.run(main())
+```
+
+### Permissions
+
+```python
+import asyncio
+from open_agent_sdk import query, AgentOptions, SDKMessageType
+
+async def main():
+    # Read-only agent — can only analyze, not modify
+    async for msg in query(
+        prompt="Review the code in src/ for best practices.",
+        options=AgentOptions(
+            allowed_tools=["Read", "Glob", "Grep"],
+            permission_mode="dontAsk",
+        ),
+    ):
+        pass
+
+asyncio.run(main())
+```
+
+### Web UI
+
+A built-in web chat interface is included for testing:
+
+```bash
+python examples/web/server.py
+# Open http://localhost:8083
+```
+
+## API reference
+
+### Top-level functions
+
+| Function                                  | Description                                          |
+| ----------------------------------------- | ---------------------------------------------------- |
+| `query(prompt, options)`                  | One-shot streaming query, returns `AsyncGenerator`   |
+| `create_agent(options)`                   | Create a reusable agent with session persistence     |
+| `tool(name, desc, model, handler)`        | Create a tool with Pydantic schema validation        |
+| `define_tool(name, ...)`                  | Low-level tool definition helper                     |
+| `create_sdk_mcp_server(name, tools)`      | Bundle tools into an in-process MCP server           |
+| `create_provider(api_type, ...)`          | Create LLM provider (Anthropic or OpenAI)            |
+| `get_all_base_tools()`                    | Get all 35 built-in tools                            |
+| `register_skill(definition)`              | Register a custom skill                              |
+| `get_all_skills()`                        | List all registered skills                           |
+| `init_bundled_skills()`                   | Initialize 5 bundled skills                          |
+| `list_sessions()`                         | List persisted sessions                              |
+| `get_session_messages(id)`                | Retrieve messages from a session                     |
+| `fork_session(id)`                        | Fork a session for branching                         |
+
+### Agent methods
+
+| Method                                   | Description                                         |
+| ---------------------------------------- | --------------------------------------------------- |
+| `await agent.query(prompt)`              | Streaming query, returns `AsyncGenerator[SDKMessage]`|
+| `await agent.prompt(text)`               | Blocking query, returns `QueryResult`               |
+| `agent.get_messages()`                   | Get conversation history                            |
+| `agent.get_api_type()`                   | Get resolved API type (`anthropic-messages` / `openai-completions`) |
+| `agent.clear()`                          | Reset session                                       |
+| `await agent.interrupt()`                | Abort current query                                 |
+| `await agent.set_model(model)`           | Change model mid-session                            |
+| `await agent.set_permission_mode(mode)`  | Change permission mode                              |
+| `await agent.close()`                    | Close MCP connections, persist session               |
+
+### Options (`AgentOptions`)
+
+| Option               | Type                                | Default                       | Description                                                             |
+| -------------------- | ----------------------------------- | ----------------------------- | ----------------------------------------------------------------------- |
+| `model`              | `str`                               | `claude-sonnet-4-5`           | LLM model ID (or set `CODEANY_MODEL` env var)                          |
+| `api_type`           | `str`                               | auto                          | `anthropic-messages` or `openai-completions` (auto-detected from model) |
+| `api_key`            | `str`                               | `CODEANY_API_KEY`             | API key                                                                 |
+| `base_url`           | `str`                               | —                             | Custom API endpoint                                                     |
+| `cwd`                | `str`                               | `os.getcwd()`                 | Working directory                                                       |
+| `system_prompt`      | `str`                               | —                             | System prompt override                                                  |
+| `append_system_prompt` | `str`                             | —                             | Append to default system prompt                                         |
+| `tools`              | `list[BaseTool]`                    | All built-in                  | Additional custom tools                                                 |
+| `allowed_tools`      | `list[str]`                         | —                             | Tool allow-list                                                         |
+| `disallowed_tools`   | `list[str]`                         | —                             | Tool deny-list                                                          |
+| `permission_mode`    | `PermissionMode`                    | `bypassPermissions`           | `default` / `acceptEdits` / `dontAsk` / `bypassPermissions` / `plan`    |
+| `can_use_tool`       | `CanUseToolFn`                      | —                             | Custom permission callback                                              |
+| `max_turns`          | `int`                               | `10`                          | Max agentic turns                                                       |
+| `max_budget_usd`     | `float`                             | —                             | Spending cap                                                            |
+| `max_tokens`         | `int`                               | `16000`                       | Max output tokens                                                       |
+| `thinking`           | `ThinkingConfig`                    | —                             | Extended thinking                                                       |
+| `mcp_servers`        | `dict[str, McpServerConfig]`        | —                             | MCP server connections                                                  |
+| `agents`             | `dict[str, AgentDefinition]`        | —                             | Subagent definitions                                                    |
+| `hooks`              | `dict[str, list[dict]]`             | —                             | Lifecycle hooks                                                         |
+| `resume`             | `str`                               | —                             | Resume session by ID                                                    |
+| `continue_session`   | `bool`                              | `False`                       | Continue most recent session                                            |
+| `persist_session`    | `bool`                              | `False`                       | Persist session to disk                                                 |
+| `session_id`         | `str`                               | auto                          | Explicit session ID                                                     |
+| `json_schema`        | `dict`                              | —                             | Structured output                                                       |
+| `sandbox`            | `bool`                              | `False`                       | Filesystem/network sandbox                                              |
+| `env`                | `dict[str, str]`                    | —                             | Environment variables                                                   |
+| `debug`              | `bool`                              | `False`                       | Enable debug output                                                     |
+
+### Environment variables
+
+| Variable             | Description                                       |
+| -------------------- | ------------------------------------------------- |
+| `CODEANY_API_KEY`    | API key (required)                                |
+| `CODEANY_MODEL`      | Default model override                            |
+| `CODEANY_BASE_URL`   | Custom API endpoint                               |
+| `CODEANY_API_TYPE`   | `anthropic-messages` or `openai-completions`      |
+
+## Multi-provider support
+
+The SDK uses a unified provider abstraction. Internally all messages use Anthropic format as the canonical representation. The provider layer handles conversion automatically:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.hanokl.com/ai/agent-sdk-python.git
-git branch -M main
-git push -uf origin main
+Your Code → Agent → QueryEngine → Provider Layer → LLM API
+                                       │
+                        ┌──────────────┴──────────────┐
+                        │   AnthropicProvider          │
+                        │   Direct pass-through        │
+                        ├─────────────────────────────┤
+                        │   OpenAIProvider             │
+                        │   Anthropic ↔ OpenAI format  │
+                        └─────────────────────────────┘
 ```
 
-## Integrate with your tools
+**Message format conversion (OpenAI provider):**
 
-- [ ] [Set up project integrations](https://gitlab.hanokl.com/ai/agent-sdk-python/-/settings/integrations)
+| Anthropic (internal)                  | OpenAI (wire)                                    |
+| ------------------------------------- | ------------------------------------------------ |
+| `system` prompt string                | `{"role": "system", "content": "..."}`           |
+| `tool_use` content block              | `tool_calls[].function`                          |
+| `tool_result` content block           | `{"role": "tool", "tool_call_id": "..."}`        |
+| `stop_reason: "end_turn"`             | `finish_reason: "stop"`                          |
+| `stop_reason: "tool_use"`             | `finish_reason: "tool_calls"`                    |
+| `stop_reason: "max_tokens"`           | `finish_reason: "length"`                        |
 
-## Collaborate with your team
+**Auto-detection**: Models starting with `gpt-`, `deepseek-`, `qwen-`, `o1-`, `o3-`, `o4-` automatically use `openai-completions`. Override with `api_type` option or `CODEANY_API_TYPE` env var.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Automatically merge when pipeline succeeds](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+## Built-in tools
 
-## Test and Deploy
+| Tool                                       | Description                                  |
+| ------------------------------------------ | -------------------------------------------- |
+| **Bash**                                   | Execute shell commands                       |
+| **Read**                                   | Read files with line numbers                 |
+| **Write**                                  | Create / overwrite files                     |
+| **Edit**                                   | Precise string replacement in files          |
+| **Glob**                                   | Find files by pattern                        |
+| **Grep**                                   | Search file contents with regex              |
+| **WebFetch**                               | Fetch and parse web content                  |
+| **WebSearch**                              | Search the web                               |
+| **NotebookEdit**                           | Edit Jupyter notebook cells                  |
+| **Agent**                                  | Spawn subagents for parallel work            |
+| **Skill**                                  | Invoke registered skills by name             |
+| **TaskCreate/List/Update/Get/Stop/Output** | Task management system                       |
+| **TeamCreate/Delete**                      | Multi-agent team coordination                |
+| **SendMessage**                            | Inter-agent messaging                        |
+| **EnterWorktree/ExitWorktree**             | Git worktree isolation                       |
+| **EnterPlanMode/ExitPlanMode**             | Structured planning workflow                 |
+| **AskUserQuestion**                        | Ask the user for input                       |
+| **ToolSearch**                             | Discover lazy-loaded tools                   |
+| **ListMcpResources/ReadMcpResource**       | MCP resource access                          |
+| **CronCreate/Delete/List**                 | Scheduled task management                    |
+| **RemoteTrigger**                          | Remote agent triggers                        |
+| **LSP**                                    | Language Server Protocol (code intelligence) |
+| **Config**                                 | Dynamic configuration                        |
+| **TodoWrite**                              | Session todo list                            |
 
-Use the built-in continuous integration in GitLab.
+## Bundled skills
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing(SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+| Skill        | Aliases              | Description                                              |
+| ------------ | -------------------- | -------------------------------------------------------- |
+| **commit**   | `ci`                 | Create git commit with well-crafted message              |
+| **review**   | `review-pr`, `cr`    | Review code changes for correctness, security, style     |
+| **debug**    | `investigate`, `diagnose` | Systematic debugging with structured investigation  |
+| **simplify** | —                    | Review changed code for reuse, quality, efficiency       |
+| **test**     | `run-tests`          | Run tests and analyze/fix failures                       |
 
-***
+## Architecture
 
-# Editing this README
+```
+┌──────────────────────────────────────────────────────┐
+│                   Your Application                    │
+│                                                       │
+│   from open_agent_sdk import create_agent              │
+└────────────────────────┬─────────────────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │       Agent         │  Session state, tool pool,
+              │ query() / prompt()  │  MCP connections, skills
+              └──────────┬──────────┘
+                         │
+              ┌──────────▼──────────┐
+              │    QueryEngine      │  Agentic loop:
+              │  submit_message()   │  API call → tools → repeat
+              └──────────┬──────────┘
+                         │
+         ┌───────────────┼───────────────┐
+         │               │               │
+   ┌─────▼─────┐  ┌─────▼─────┐  ┌─────▼─────┐
+   │ Providers │  │  35 Tools │  │    MCP     │
+   │ Anthropic │  │ Bash,Read │  │  Servers   │
+   │  OpenAI   │  │ Edit,...  │  │ stdio/SSE/ │
+   │ DeepSeek  │  │ Skill,... │  │ HTTP/SDK   │
+   └───────────┘  └───────────┘  └───────────┘
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thank you to [makeareadme.com](https://www.makeareadme.com/) for this template.
+**Key internals:**
 
-## Suggestions for a good README
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+| Component             | Description                                                      |
+| --------------------- | ---------------------------------------------------------------- |
+| **Provider layer**    | Anthropic + OpenAI-compatible (DeepSeek, Qwen, vLLM, Ollama)    |
+| **QueryEngine**       | Core agentic loop with auto-compact, retry, tool orchestration   |
+| **Skill system**      | 5 bundled skills (commit, review, debug, simplify, test) + custom |
+| **Auto-compact**      | Summarizes conversation when context window fills up             |
+| **Micro-compact**     | Truncates oversized tool results                                 |
+| **Retry**             | Exponential backoff for rate limits and transient errors         |
+| **Token estimation**  | Rough token counting for budget and compaction thresholds        |
+| **File cache**        | LRU cache for file reads                                         |
+| **Hook system**       | 20 lifecycle events (PreToolUse, PostToolUse, SessionStart, ...) |
+| **Session storage**   | Persist / resume / fork sessions on disk                         |
+| **Context injection** | Git status + AGENT.md automatically injected into system prompt  |
 
-## Name
-Choose a self-explaining name for your project.
+## Examples
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+| #   | File                                    | Description                                     |
+| --- | --------------------------------------- | ----------------------------------------------- |
+| 01  | `examples/01_simple_query.py`           | Streaming query with event handling              |
+| 02  | `examples/02_multi_tool.py`             | Multi-tool orchestration (Glob + Bash)           |
+| 03  | `examples/03_multi_turn.py`             | Multi-turn session persistence                   |
+| 04  | `examples/04_prompt_api.py`             | Blocking `prompt()` API                          |
+| 05  | `examples/05_custom_system_prompt.py`   | Custom system prompt                             |
+| 06  | `examples/06_mcp_server.py`             | MCP server integration                           |
+| 07  | `examples/07_custom_tools.py`           | Custom tools with `define_tool()`                |
+| 08  | `examples/08_official_api_compat.py`    | `query()` API pattern                            |
+| 09  | `examples/09_subagents.py`              | Subagent delegation                              |
+| 10  | `examples/10_permissions.py`            | Read-only agent with tool restrictions           |
+| 11  | `examples/11_custom_mcp_tools.py`       | `tool()` + `create_sdk_mcp_server()`             |
+| 12  | `examples/12_skills.py`                 | Skill system usage (register, invoke, list)      |
+| 13  | `examples/13_hooks.py`                  | Lifecycle hook configuration and execution       |
+| 14  | `examples/14_openai_compat.py`          | OpenAI/compatible model support (DeepSeek, etc.) |
+| web | `examples/web/`                         | Web chat UI for testing                          |
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+Run any example:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```bash
+python examples/01_simple_query.py
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Start the web UI:
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```bash
+python examples/web/server.py
+# Open http://localhost:8083
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+## Project structure
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```
+open-agent-sdk-python/
+├── src/open_agent_sdk/
+│   ├── __init__.py         # Public exports
+│   ├── agent.py            # Agent high-level API
+│   ├── engine.py           # QueryEngine agentic loop
+│   ├── types.py            # Core type definitions
+│   ├── session.py          # Session persistence
+│   ├── hooks.py            # Hook system (20 lifecycle events)
+│   ├── tool_helper.py      # Pydantic-based tool creation
+│   ├── sdk_mcp_server.py   # In-process MCP server factory
+│   ├── providers/
+│   │   ├── types.py        # LLMProvider interface
+│   │   ├── anthropic_provider.py  # Anthropic implementation
+│   │   ├── openai_provider.py     # OpenAI-compatible (no SDK dependency)
+│   │   └── factory.py     # create_provider() factory
+│   ├── skills/
+│   │   ├── types.py        # SkillDefinition, SkillResult
+│   │   ├── registry.py     # Skill registry (register, lookup, format)
+│   │   └── bundled/        # 5 bundled skills (commit, review, debug, simplify, test)
+│   ├── mcp/
+│   │   └── client.py       # MCP client (stdio/SSE/HTTP)
+│   ├── tools/              # 35 built-in tools
+│   │   ├── bash.py, read.py, write.py, edit.py
+│   │   ├── glob_tool.py, grep.py, web_fetch.py, web_search.py
+│   │   ├── agent_tool.py, skill_tool.py, send_message.py
+│   │   ├── task_tools.py, team_tools.py, worktree_tools.py
+│   │   ├── plan_tools.py, cron_tools.py, lsp_tool.py
+│   │   └── config_tool.py, todo_tool.py, ...
+│   └── utils/
+│       ├── messages.py     # Message creation & normalization
+│       ├── tokens.py       # Token estimation & cost (Anthropic + OpenAI + DeepSeek + Qwen)
+│       ├── compact.py      # Auto-compaction logic
+│       ├── retry.py        # Exponential backoff retry
+│       ├── context.py      # Git & project context injection
+│       └── file_cache.py   # LRU file state cache
+├── tests/                  # 265 tests
+├── examples/               # 14 examples + web UI
+└── pyproject.toml
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+## Links
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+- Website: [codeany.ai](https://codeany.ai)
+- TypeScript SDK: [github.com/codeany-ai/open-agent-sdk-typescript](https://github.com/codeany-ai/open-agent-sdk-typescript)
+- Go SDK: [github.com/codeany-ai/open-agent-sdk-go](https://github.com/codeany-ai/open-agent-sdk-go)
+- Issues: [github.com/codeany-ai/open-agent-sdk-python/issues](https://github.com/codeany-ai/open-agent-sdk-python/issues)
 
 ## License
-For open source projects, say how it is licensed.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+MIT
